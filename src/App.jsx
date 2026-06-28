@@ -95,6 +95,10 @@ export default function App() {
         import('./lib/recognitionProvider'),
       ])
       setProcessing({ phase: 'recognize', group: 'all', progress: 0, status: '准备识别任务' })
+      // 先建好识别器并预热（开始下载/初始化 OCR 模型），让模型加载与下面的图片预处理并行，整体更快。
+      const provider = createRecognitionProvider('local-ocr')
+      controller.signal.addEventListener('abort', () => { provider.terminate().catch(() => {}) }, { once: true })
+      provider.warmUp()
       const prizeAssets = await prepareSourceAssets(prizeFiles, {
         detectRegions: false,
         signal: controller.signal,
@@ -102,7 +106,6 @@ export default function App() {
       })
       const invoiceJobs = buildRegionJobs(assets).map((job) => ({ ...job, kind: 'invoice' }))
       const prizeJobs = buildRegionJobs(prizeAssets).map((job) => ({ ...job, kind: 'prize' }))
-      const provider = createRecognitionProvider('local-ocr')
       const documents = await recognizeWithCache(provider, [...invoiceJobs, ...prizeJobs], ocrCacheRef.current, {
         signal: controller.signal,
         onProgress: (progress) => setProcessing({ phase: 'recognize', group: 'all', ...progress }),

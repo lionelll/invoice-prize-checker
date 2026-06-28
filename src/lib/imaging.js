@@ -243,18 +243,25 @@ export function calculateDHash(canvas) {
   return hash.toString(16).padStart(16, '0')
 }
 
+const OCR_MAX_SIDE = 2000
+
 export function cropRegion(asset, region) {
   const x = Math.max(0, Math.round(region.x))
   const y = Math.max(0, Math.round(region.y))
   const width = Math.max(1, Math.min(asset.width - x, Math.round(region.width)))
   const height = Math.max(1, Math.min(asset.height - y, Math.round(region.height)))
+  // 识别用的图缩到长边不超过 2000px：手机长截图常有 2700px+，缩小后 OCR 快很多，
+  // 而发票号/金额这类大字号文字精度几乎不受影响。
+  const scale = Math.min(1, OCR_MAX_SIDE / Math.max(width, height))
+  const targetWidth = Math.max(1, Math.round(width * scale))
+  const targetHeight = Math.max(1, Math.round(height * scale))
   const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
+  canvas.width = targetWidth
+  canvas.height = targetHeight
   const context = canvas.getContext('2d', { willReadFrequently: true })
   context.fillStyle = '#fff'
-  context.fillRect(0, 0, width, height)
-  context.drawImage(asset.canvas, x, y, width, height, 0, 0, width, height)
+  context.fillRect(0, 0, targetWidth, targetHeight)
+  context.drawImage(asset.canvas, x, y, width, height, 0, 0, targetWidth, targetHeight)
   const regionSignature = [x, y, width, height].map((value) => Math.round(value / 8) * 8).join(':')
   return {
     image: canvas,

@@ -12,15 +12,48 @@ function abortError() {
 
 function defaultConcurrency() {
   if (typeof navigator === 'undefined') return 1
-  return navigator.hardwareConcurrency >= 6 && window.innerWidth >= 760 ? 2 : 1
+  if (typeof window !== 'undefined' && window.innerWidth < 760) return 1 // 手机端省内存，单 worker
+  const cores = navigator.hardwareConcurrency || 2
+  return Math.max(1, Math.min(2, Math.floor(cores / 2)))
 }
 
 /** @returns {RecognitionProvider} */
 export function createLocalRecognitionProvider({ concurrency = defaultConcurrency() } = {}) {
   let activeWorkers = []
+  let warmingPromise = null
+  let reporter = null
   let terminated = false
 
+  const spawnWorkers = (count) => Promise.all(Array.from({ length: count }, (_, workerIndex) =>
+    createWorker('chi_sim+eng', 1, {
+      logger: (message) => reporter?.(workerIndex, message.status, message.progress),
+    })))
+
+  const ensureWorkers = async (count) => {
+    if (!warmingPromise) warmingPromise = spawnWorkers(count)
+    activeWorkers = await warmingPromise
+    return activeWorkers
+  }
+
+  const disposeWorkers = async () => {
+    const promise = warmingPromise
+    warmingPromise = null
+    reporter = null
+    const workers = promise ? await promise.catch(() => activeWorkers) : activeWorkers
+    activeWorkers = []
+    await Promise.allSettled((workers || []).map((worker) => worker.terminate()))
+  }
+
   return {
+    // 预热：在图片预处理阶段就开始下载/初始化 OCR 模型，让这段耗时与预处理重叠，整体更快。
+    warmUp(count = concurrency) {
+      terminated = false
+      if (!warmingPromise) {
+        warmingPromise = spawnWorkers(Math.max(1, Math.min(count, 2)))
+        warmingPromise.catch(() => { warmingPromise = null })
+      }
+    },
+
     async recognize(jobs, { onProgress, signal } = {}) {
       if (!jobs.length) return []
       terminated = false
@@ -48,23 +81,25 @@ export function createLocalRecognitionProvider({ concurrency = defaultConcurrenc
           sourceName: job?.sourceName ?? '',
         })
       }
+      reporter = (workerIndex, status, progress) => {
+        if (workerIndex < workerCount) {
+          workerProgress[workerIndex] = progress ?? 0
+          report(status, workerIndex)
+        }
+      }
 
-      activeWorkers = await Promise.all(Array.from({ length: workerCount }, (_, workerIndex) => createWorker('chi_sim+eng', 1, {
-        logger: (message) => {
-          workerProgress[workerIndex] = message.progress ?? 0
-          report(message.status, workerIndex)
-        },
-      })))
+      // 复用 warmUp 预热好的 worker；若没预热则现场创建。模型加载已与预处理重叠，这里通常即刻就绪。
+      const pool = await ensureWorkers(workerCount)
+      const workers = pool.slice(0, workerCount)
 
       if (signal?.aborted || terminated) {
-        await Promise.allSettled(activeWorkers.map((worker) => worker.terminate()))
-        activeWorkers = []
+        await disposeWorkers()
         throw abortError()
       }
 
       const abortListener = () => {
         terminated = true
-        activeWorkers.forEach((worker) => worker.terminate().catch(() => {}))
+        disposeWorkers().catch(() => {})
       }
       signal?.addEventListener('abort', abortListener, { once: true })
 
@@ -91,11 +126,10 @@ export function createLocalRecognitionProvider({ concurrency = defaultConcurrenc
       }
 
       try {
-        await Promise.all(activeWorkers.map(runWorker))
+        await Promise.all(workers.map(runWorker))
       } finally {
         signal?.removeEventListener('abort', abortListener)
-        await Promise.allSettled(activeWorkers.map((worker) => worker.terminate()))
-        activeWorkers = []
+        await disposeWorkers()
       }
       if (signal?.aborted || terminated) throw abortError()
 
@@ -104,8 +138,7 @@ export function createLocalRecognitionProvider({ concurrency = defaultConcurrenc
 
     async terminate() {
       terminated = true
-      await Promise.allSettled(activeWorkers.map((worker) => worker.terminate()))
-      activeWorkers = []
+      await disposeWorkers()
     },
   }
 }
