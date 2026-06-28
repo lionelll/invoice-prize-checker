@@ -88,7 +88,6 @@ self.onmessage = async ({ data }) => {
   try {
     const lightPaperRegions = detectLightPaperRegions(imageData)
     if (lightPaperRegions.length) {
-      getOpenCv().catch(() => {})
       self.postMessage({ id, regions: lightPaperRegions })
       return
     }

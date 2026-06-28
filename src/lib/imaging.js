@@ -65,8 +65,18 @@ export async function sha256File(file) {
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('')
 }
 
-function canvasToPreview(canvas, quality = 0.82) {
-  return canvas.toDataURL('image/jpeg', quality)
+function canvasToPreview(canvas, quality = 0.78, maxSide = 1100) {
+  const sourceMaxSide = Math.max(canvas.width, canvas.height)
+  const scale = Math.min(1, maxSide / Math.max(1, sourceMaxSide))
+  if (scale >= 1) return canvas.toDataURL('image/jpeg', quality)
+  const preview = document.createElement('canvas')
+  preview.width = Math.max(1, Math.round(canvas.width * scale))
+  preview.height = Math.max(1, Math.round(canvas.height * scale))
+  const context = preview.getContext('2d')
+  context.imageSmoothingEnabled = true
+  context.imageSmoothingQuality = 'medium'
+  context.drawImage(canvas, 0, 0, preview.width, preview.height)
+  return preview.toDataURL('image/jpeg', quality)
 }
 
 async function imageFileToCanvas(file) {
@@ -184,13 +194,35 @@ export async function detectInvoiceRegions(asset, signal) {
 export async function prepareSourceAssets(files, { detectRegions = true, onProgress, signal } = {}) {
   const assets = []
   const detectionCache = new Map()
+  const exactFileCache = new Map()
   for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
     throwIfAborted(signal)
     const file = files[fileIndex]
     onProgress?.({ status: '正在计算文件指纹', progress: fileIndex / Math.max(1, files.length), sourceName: file.name })
     const fileHash = await sha256File(file)
+    const cachedTemplates = exactFileCache.get(fileHash)
+    if (cachedTemplates) {
+      cachedTemplates.forEach((template) => {
+        const id = `asset-${fileIndex}-${template.page}-${fileHash.slice(0, 10)}`
+        assets.push({
+          id,
+          fileId: `file-${fileIndex}-${fileHash.slice(0, 10)}`,
+          sourceName: file.name,
+          page: template.page,
+          fileHash,
+          canvas: template.canvas,
+          previewUrl: template.previewUrl,
+          width: template.width,
+          height: template.height,
+          regions: template.regions.map((region, index) => ({ ...region, id: regionId(id, index) })),
+        })
+      })
+      onProgress?.({ status: '已复用相同文件预处理结果', progress: (fileIndex + 1) / files.length, sourceName: file.name })
+      continue
+    }
     const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
     const pages = isPdf ? await pdfFileToCanvases(file, signal) : [{ canvas: await imageFileToCanvas(file), page: 1 }]
+    const templates = []
     for (const pageEntry of pages) {
       throwIfAborted(signal)
       const asset = {
@@ -200,7 +232,7 @@ export async function prepareSourceAssets(files, { detectRegions = true, onProgr
         page: pageEntry.page,
         fileHash,
         canvas: pageEntry.canvas,
-        previewUrl: canvasToPreview(pageEntry.canvas),
+        previewUrl: canvasToPreview(pageEntry.canvas, 0.76, 1200),
         width: pageEntry.canvas.width,
         height: pageEntry.canvas.height,
         regions: [],
@@ -216,7 +248,17 @@ export async function prepareSourceAssets(files, { detectRegions = true, onProgr
         asset.regions = [createFullRegion(asset)]
       }
       assets.push(asset)
+      templates.push({
+        page: asset.page,
+        fileHash,
+        canvas: asset.canvas,
+        previewUrl: asset.previewUrl,
+        width: asset.width,
+        height: asset.height,
+        regions: asset.regions.map(({ id, ...region }) => region),
+      })
     }
+    exactFileCache.set(fileHash, templates)
     onProgress?.({ status: '文件预处理完成', progress: (fileIndex + 1) / files.length, sourceName: file.name })
   }
   return assets
@@ -243,7 +285,7 @@ export function calculateDHash(canvas) {
   return hash.toString(16).padStart(16, '0')
 }
 
-const OCR_MAX_SIDE = 2000
+const OCR_MAX_SIDE = 1700
 
 export function cropRegion(asset, region) {
   const x = Math.max(0, Math.round(region.x))
@@ -265,7 +307,7 @@ export function cropRegion(asset, region) {
   const regionSignature = [x, y, width, height].map((value) => Math.round(value / 8) * 8).join(':')
   return {
     image: canvas,
-    previewUrl: canvasToPreview(canvas, 0.86),
+    previewUrl: canvasToPreview(canvas, 0.76, 900),
     perceptualHash: calculateDHash(canvas),
     aspectRatio: width / height,
     regionSignature,

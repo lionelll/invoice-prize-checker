@@ -87,6 +87,7 @@ export default function App() {
 
   const recognizeConfirmedRegions = async () => {
     const controller = createController()
+    let provider
     setStage('processing')
     setError('')
     try {
@@ -96,7 +97,7 @@ export default function App() {
       ])
       setProcessing({ phase: 'recognize', group: 'all', progress: 0, status: '准备识别任务' })
       // 先建好识别器并预热（开始下载/初始化 OCR 模型），让模型加载与下面的图片预处理并行，整体更快。
-      const provider = createRecognitionProvider('local-ocr')
+      provider = createRecognitionProvider('local-ocr')
       controller.signal.addEventListener('abort', () => { provider.terminate().catch(() => {}) }, { once: true })
       provider.warmUp()
       const prizeAssets = await prepareSourceAssets(prizeFiles, {
@@ -130,6 +131,7 @@ export default function App() {
       }
       setStage('regions')
     } finally {
+      provider?.terminate().catch(() => {})
       setProcessing(null)
     }
   }

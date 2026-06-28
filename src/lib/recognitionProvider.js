@@ -18,7 +18,7 @@ function defaultConcurrency() {
 }
 
 /** @returns {RecognitionProvider} */
-export function createLocalRecognitionProvider({ concurrency = defaultConcurrency() } = {}) {
+export function createLocalRecognitionProvider({ concurrency = defaultConcurrency(), rotateAuto = false, keepBlocks = true } = {}) {
   let activeWorkers = []
   let warmingPromise = null
   let reporter = null
@@ -70,8 +70,14 @@ export function createLocalRecognitionProvider({ concurrency = defaultConcurrenc
       const workerCount = Math.max(1, Math.min(concurrency, uniqueJobs.length, 2))
       const workerProgress = Array(workerCount).fill(0)
       let completed = 0
+      let lastReportAt = 0
+      let lastReportStatus = ''
 
-      const report = (status, workerIndex, job) => {
+      const report = (status, workerIndex, job, force = false) => {
+        const now = Date.now()
+        if (!force && status === lastReportStatus && now - lastReportAt < 120) return
+        lastReportAt = now
+        lastReportStatus = status
         const running = workerProgress.reduce((sum, value) => sum + value, 0)
         onProgress?.({
           status,
@@ -112,8 +118,11 @@ export function createLocalRecognitionProvider({ concurrency = defaultConcurrenc
           cursor += 1
           const job = uniqueJobs[jobIndex]
           workerProgress[workerIndex] = 0
-          report('正在识别文字', workerIndex, job)
-          const { data } = await worker.recognize(job.image, { rotateAuto: true }, { text: true, blocks: true })
+          report('正在识别文字', workerIndex, job, true)
+          let { data } = await worker.recognize(job.image, rotateAuto ? { rotateAuto: true } : {}, { text: true, blocks: keepBlocks })
+          if (!rotateAuto && (!data.text?.trim() || data.confidence < 35)) {
+            ;({ data } = await worker.recognize(job.image, { rotateAuto: true }, { text: true, blocks: keepBlocks }))
+          }
           recognized.set(keyOf(job), {
             text: data.text,
             confidence: data.confidence,
@@ -121,7 +130,7 @@ export function createLocalRecognitionProvider({ concurrency = defaultConcurrenc
           })
           completed += 1
           workerProgress[workerIndex] = 0
-          report('识别完成', workerIndex, job)
+          report('识别完成', workerIndex, job, true)
         }
       }
 
